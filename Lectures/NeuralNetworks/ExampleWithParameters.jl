@@ -36,6 +36,7 @@ Random.seed!(42)
     A_bounds::Tuple{Float32,Float32} = (0.5f0,1.5f0)
     β_bounds::Tuple{Float32,Float32} = (0.9f0,0.99f0)
     ρ_bounds::Tuple{Float32,Float32} = (0.9f0,0.99f0)
+    γ_bounds::Tuple{Float32,Float32} = (0.5f0,4.0f0)
 end
 
 ### Utility function and its marginal derivative
@@ -73,9 +74,9 @@ end
 
 #Now construct the neural network 
 model = Chain(
-    Dense(4, 64, relu),
-    Dense(64, 64, relu),
-    Dense(64, 1, softplus)  # output layer (smooth version of RELU)
+    Dense(5, 128, relu),
+    Dense(128, 128, relu),
+    Dense(128, 1, softplus)  # output layer (smooth version of RELU)
 )
 # If GPU available, move model to GPU
 if has_metal
@@ -93,6 +94,7 @@ function sample_batch(para::Params, batch_size)
     k_batch = rand(Float32,batch_size)
     β_batch = rand(Float32,batch_size)
     ρ_batch = rand(Float32,batch_size)
+    γ_batch = rand(Float32,batch_size)
     # sample productivity A (log-normal around 1)
     # We approximate the ergodic distribution of A_t as lognormal with mean 0 and std derived from σ_ε.
     # To be precise, if A follows log AR(1), its stationary distribution is N(0, σ_stat^2) with σ_stat^2 = σ_ε^2 / (1-ρ^2).
@@ -100,38 +102,41 @@ function sample_batch(para::Params, batch_size)
     A = exp.(σ_stat .* randn(Float32,batch_size))
     A_batch = normalize(A,A_bounds[1],A_bounds[2])
 
-    return Float32.(k_batch), Float32.(A_batch), Float32.(β_batch), Float32.(ρ_batch)
+    return Float32.(k_batch), Float32.(A_batch), Float32.(β_batch), Float32.(ρ_batch), Float32.(γ_batch)
 end
 
 
 # Euler residual for a batch (vectorized)
 function euler_residual_batch(para,model, data)
-    @unpack α, β, δ, γ, σ_ε, ρ, k_bounds, A_bounds,β_bounds,ρ_bounds = para
+    @unpack α, β, δ, γ, σ_ε, ρ, k_bounds, A_bounds,β_bounds,ρ_bounds,γ_bounds = para
     # compute consumption from network
     # Prepare input matrix for model: 2 x N (each column is [k; A])
     # If on GPU, ensure k_batch, A_batch are CuArrays
-    k_batch, A_batch, β_batch, ρ_batch = data
+    k_batch, A_batch, β_batch, ρ_batch, γ_batch = data
     if has_cuda
         k_batch = CuArray(k_batch)
         A_batch = CuArray(A_batch)
         β_batch = CuArray(β_batch)
         ρ_batch = CuArray(ρ_batch)
+        γ_batch = CuArray(γ_batch)
     end
     if has_metal
         k_batch = mtl(k_batch)
         A_batch = mtl(A_batch)
         β_batch = mtl(β_batch)
         ρ_batch = mtl(ρ_batch)
+        γ_batch = mtl(γ_batch)
     end
 
     β = denormalize(β_batch,β_bounds[1],β_bounds[2])
     ρ = denormalize(ρ_batch,ρ_bounds[1],ρ_bounds[2])
+    γ = denormalize(γ_batch,γ_bounds[1],γ_bounds[2])
     k_ss, c_ss, y_ss, A_ss = steady_state(α, β, δ)
     batch_size = length(k_batch)
     k_low = k_bounds[1]*k_ss
     k_high = k_bounds[2]*k_ss
     
-    X = hcat(k_batch, A_batch, β_batch, ρ_batch)'  # shape 4 x batch_size
+    X = hcat(k_batch, A_batch, β_batch, ρ_batch, γ_batch)'  # shape 5 x batch_size
     # Network output (on GPU or CPU depending on model)
     # model(X) will give a 1 x N matrix (or vector) of outputs
     net_out = model(X)            # 1 x batch_size
@@ -167,7 +172,7 @@ function euler_residual_batch(para,model, data)
     A_next_norm = normalize(A_next,A_bounds[1],A_bounds[2])
     k_next_norm = normalize(k_next,k_low,k_high)
     # Compute next-period consumption by feeding (k_next, A_next) through policy network
-    X_next = hcat(k_next_norm, A_next_norm, β_batch, ρ_batch)'
+    X_next = hcat(k_next_norm, A_next_norm, β_batch, ρ_batch, γ_batch)'
     frac_next = vec(model(X_next))
 
     resource_next = A_next .* (k_next .^ α) .+ (1f0 .- δ).*k_next
@@ -191,7 +196,7 @@ end
 
 # Hyperparameters
 batch_size = 2048      # number of state points per batch
-epochs     = 50000      # training epochs
+epochs     = 100000      # training epochs
 η          = 1e-3      # initial learning rate
 
 # Initialize optimizer
@@ -226,7 +231,7 @@ end
 
 # Function to simulate the economy using the trained model
 function simulate_economy(model, para::Params, T::Int=200, k0=nothing, A0=nothing)
-    @unpack α, β, δ, γ, ρ, σ_ε, k_bounds, A_bounds,β_bounds,ρ_bounds = para
+    @unpack α, β, δ, γ, ρ, σ_ε, k_bounds, A_bounds,β_bounds,ρ_bounds,γ_bounds = para
     k_ss, c_ss, y_ss, A_ss = steady_state(α, β, δ)
     k_low = k_bounds[1]*k_ss
     k_high = k_bounds[2]*k_ss
@@ -263,9 +268,10 @@ function simulate_economy(model, para::Params, T::Int=200, k0=nothing, A0=nothin
         A_norm = normalize(A, A_bounds[1], A_bounds[2])
         β_norm = normalize(β, β_bounds[1], β_bounds[2])
         ρ_norm = normalize(ρ, ρ_bounds[1], ρ_bounds[2])
+        γ_norm = normalize(γ, γ_bounds[1], γ_bounds[2])
         
         # Create input for neural network
-        state = reshape([k_norm, A_norm, β_norm, ρ_norm], 4, 1)
+        state = reshape([k_norm, A_norm, β_norm, ρ_norm, γ_norm], 5, 1)
         
         # Get consumption fraction from model
         frac = model(state)[1]
@@ -428,7 +434,7 @@ display(sim_plot)
 
 # Generate impulse response
 println("\nComputing impulse response to productivity shock...")
-ir_plot, deviations = impulse_response(model, para, 0.05, 40, 100)
+ir_plot, deviations = impulse_response(model, para, 0.05, 40, 50)
 display(ir_plot)
 
 # Policy function visualization
