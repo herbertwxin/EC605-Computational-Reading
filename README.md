@@ -1,6 +1,4 @@
-# EC607-Computational-Economics
-Lectures and code for my EC 607 Seminar
-
+# EC605-Reading on Computational-Economics
 
 ## Lectures
 
