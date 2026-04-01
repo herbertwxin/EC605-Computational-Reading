@@ -2,13 +2,18 @@
 title: "EC605 Study Notes"
 author: "Herbert Xin"
 format: html
-engine: julia
 ---
 
 # Kalman Filter
 
+I think I have a reasonable understanding of Kalman filter. But I want to confirm on the current use of Kalman filter in macroeconomics. 
+
+* I know Kalman filter is used to interpolate the unobserved state variables. But what's the current consensus on the use of Kalman filter in macroeconomics? I've also seen papers that argue we should not use Kalman filter. 
+
+***
 The example we have is 
-$$\begin{aligned}
+$$
+\begin{aligned}
 x_{t+1} =& A x_t + C w_{t+1}\\
 y_t =&Gx_t + v_t
 \end{aligned}
@@ -16,12 +21,12 @@ $$
 
 where the initial belief is 
 $$
-    x_0\sim\mathcal N(\hat x_0,\Sigma_0)
+    x_0\sim \mathcal N(\hat x_0,\Sigma_0)
 $$
 
 From environment we can back out the anticipated distribution of $y_0$ as
 $$
-y_0\sim\mathcal N\left(G\hat x_0,G\Sigma_0G' + R\right)
+y_0 \sim \mathcal N \left(G\hat x_0,G\Sigma_0G' + R\right)
 $$
 
 so we know that 
@@ -29,7 +34,7 @@ $$
     a_0\equiv y_0 - G\hat x_0 \sim \mathcal N\left(0,G\Sigma_0G' + R\right)
 $$
 
----
+***
 
 We use the forecast error to predict the difference between the actual initial point and the anticipated initial point. 
 $$
@@ -52,7 +57,7 @@ $$
     L_0 = \Sigma_0G'\left(G\Sigma_0G' + R\right)^{-1}
 $$
 
----
+***
 
 Now from the LOM we have
 $$
@@ -77,7 +82,8 @@ $$
     \Sigma_1 = (A - K_0G)\Sigma_0(A - K_0G)' + CC' + K_0 RK_0' 
 $$
 
----
+***
+
 Combining all of these insights we have the Kalman Filter
 $$
 \begin{align}
