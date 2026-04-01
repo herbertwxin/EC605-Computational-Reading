@@ -1,0 +1,90 @@
+---
+title: "EC605 Study Notes"
+author: "Herbert Xin"
+format: html
+engine: julia
+---
+
+# Kalman Filter
+
+The example we have is 
+$$\begin{aligned}
+x_{t+1} =& A x_t + C w_{t+1}\\
+y_t =&Gx_t + v_t
+\end{aligned}
+$$
+
+where the initial belief is 
+$$
+    x_0\sim\mathcal N(\hat x_0,\Sigma_0)
+$$
+
+From environment we can back out the anticipated distribution of $y_0$ as
+$$
+y_0\sim\mathcal N\left(G\hat x_0,G\Sigma_0G' + R\right)
+$$
+
+so we know that 
+$$
+    a_0\equiv y_0 - G\hat x_0 \sim \mathcal N\left(0,G\Sigma_0G' + R\right)
+$$
+
+---
+
+We use the forecast error to predict the difference between the actual initial point and the anticipated initial point. 
+$$
+    x_0 - \hat x_0 = L_0a_0 + \eta 
+$$
+
+Multiply the regression equation by $a_0'$ and take expectations:
+$$
+\mathbb E(x_0-\hat x_0)a_0' = L_0 \mathbb E a_0a_0'
+$$
+Since orthogality implies $\mathbb E\eta a_0' = 0$
+
+Now since $a_0 = y_0 - G\hat x_0 = G(x_0 - \hat x_0) + v_0$, we have
+$$
+    \Sigma_0G' = L_0\left(G\Sigma_0G' +R\right)
+$$
+
+which allows us to solve for $L_0$:
+$$
+    L_0 = \Sigma_0G'\left(G\Sigma_0G' + R\right)^{-1}
+$$
+
+---
+
+Now from the LOM we have
+$$
+\begin{align}
+x_1 &= A x_0 + C w_1\\
+x_1 &= A\hat x_0 + A(x_0 - \hat x_0) + C w_1
+\end{align}
+$$
+
+Take conditional expectation on $y_0$:
+$$
+    \hat x_1 \equiv \mathbb E[x_1|y_0] = A\hat x_0 + AL_0a_0\equiv A \hat x_0 + K_0a_0
+$$
+
+Subtracting the forecast from the actual value, we have
+$$
+    x_1 -\hat x_1 = A(x_0-\hat x_0) +C w_1 - K_0 a_0
+$$
+
+Now we can compute the covariance of the forecast error:
+$$
+    \Sigma_1 = (A - K_0G)\Sigma_0(A - K_0G)' + CC' + K_0 RK_0' 
+$$
+
+---
+Combining all of these insights we have the Kalman Filter
+$$
+\begin{align}
+    a_t &= y_t - G\hat x_t\\
+    K_t &= A\Sigma_t G'(G\Sigma_tG' +R)^{-1}\\
+    \hat x_{t+1}&=A\hat x_t + K_t a_t\\
+    \Sigma_{t+1} &= CC' + K_t R K_t' + (A - K_tG)\Sigma_t(A-K_tG)'
+\end{align}
+$$
+
