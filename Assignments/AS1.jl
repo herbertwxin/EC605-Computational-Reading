@@ -1,4 +1,4 @@
-using Random, LinearAlgebra, Plots, Parameters
+using Random, LinearAlgebra, Plots, Parameters, Distributions
 
 # First-order MA process
 function MA1(θ, N)
@@ -34,10 +34,11 @@ function updateBeliefs(KF::KalmanFilter,y,x̂,Σ)
     @unpack A,G,C = KF
     a = y - G*x̂
     K = A*Σ*G'*inv(G*Σ*G')
+    Ω = G*Σ*G' 
     x̂′= A*x̂ + K*a
     Σ′ = C*C' + (A-K*G)*Σ*(A' - G'*K')
     
-    return x̂′,Σ′
+    return x̂′,Σ′, a, Ω
 end
 
 
@@ -46,24 +47,41 @@ function applyFilter(KF::KalmanFilter,Y)
     @unpack x̂0,Σ0 = KF
 
     T = size(Y,2) #how many rows are Y
-    x̂ = zeros(length(x̂0),T+1)
-    Σ = zeros(length(x̂0),length(x̂0),T+1) #note 3 dimensional array
+    n = length(x̂0)        # state dimension (2)
+    m = size(KF.G, 1)     # observation dimension (1)
+    x̂ = zeros(n, T+1)
+    Σ = zeros(n, n, T+1)  #note 3 dimensional array
+    a = zeros(m, T)        # innovation: size (1, T)
+    Ω = zeros(m, m, T)    # innovation variance: size (1, 1, T)
     x̂[:,1] .= x̂0
     Σ[:,:,1] .= Σ0
+
     for t in 1:T
-        x̂[:,t+1],Σ[:,:,t+1] = updateBeliefs(KF,Y[:,t],x̂[:,t],Σ[:,:,t])
+        x̂[:,t+1], Σ[:,:,t+1], a[:,t], Ω[:,:,t] = updateBeliefs(KF,Y[:,t],x̂[:,t],Σ[:,:,t])
     end
 
-    return x̂,Σ
+    return x̂, Σ, a, Ω
 end
 
 KF = KalmanFilter()
-x̂,Σ = applyFilter(KF,Y')
-plot(1:T,x,xlabel="Time",ylabel="x",label="True State",legend=true)
-plot!(1:T,x̂[2, 2:T+1],label="Filter")
+x̂, Σ, a, Ω = applyFilter(KF,Y')
+p1 = plot(1:T,x,xlabel="Time",ylabel="x",label="True State",legend=true)
+plot!(p1,1:T,x̂[2, 2:T+1],label="Filter")
+display(p1)
 
 #The standard gain is Σ*G'*inv(G*Σ*G') (no A). With A multiplied in, 
 #your x̂′ becomes the next predicted state x̂_{t+1|t} rather than the current filtered state x̂_{t|t}. 
 #This can be an intentional "predict-and-update in one step" formulation, but it also changes 
 #what a = y - G*x̂ means — x̂ must then be the predicted state x̂_{t|t-1}, not the filtered one. 
 #Make sure x̂0 is your prior predicted state and that Σ is the predicted (not filtered) covariance throughout.
+
+θ_grid = 0.5:0.1:5.0
+LL_grid = zeros(length(θ_grid))
+for (i, θ) in enumerate(θ_grid)
+    KF_θ = KalmanFilter(G=[1. -θ])
+    _, _, a_θ, Ω_θ = applyFilter(KF_θ, Y')
+    LL_grid[i] = sum(logpdf(Normal(0, sqrt(Ω_θ[1,1,t])), a_θ[1,t]) for t in 1:T)
+end
+
+p2 = plot(θ_grid, LL_grid, xlabel="θ", ylabel="Log-Likelihood")
+display(p2)
