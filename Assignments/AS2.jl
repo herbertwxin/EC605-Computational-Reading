@@ -1,4 +1,4 @@
-using Random, LinearAlgebra, Plots, Parameters, NLsolve
+using Random, LinearAlgebra, Plots, Parameters, NLsolve, QuantEcon, CSV, DataFrames, Statistics
 
 @with_kw mutable struct Params
     β::Float64 = 0.99
@@ -153,6 +153,60 @@ function value_function_iteration(params::Params, kgrid::Vector{Float64}, ngrid:
     return V, kpol, npol
 end
 
+function value_function_iteration_stochastic(params::Params, kgrid::Vector{Float64}, ngrid::Vector{Float64},
+    T::Int, ϵ::Float64, Π::Matrix{Float64}, agrid::Vector{Float64})
+    @unpack α, β, δ, χ, γ, ϕ = params
+    Nk = length(kgrid)
+    Nn = length(ngrid) 
+    Na = length(agrid)
+    V     = zeros(Nk, Na)      # value function (over k states)
+    V_new = zeros(Nk, Na)
+    kpol  = ones(Int, Nk, Na) # index into kgrid for k' policy
+    npol  = ones(Int, Nk, Na) # index into ngrid for n policy 
+    # helpers: no name collision with loop variables
+    inv_val(kp, k)  = kp - (1-δ)*k
+    cons(iv, k, n, a)  = exp(a)*k^α*n^(1-α) - iv - ϕ*(iv/k - δ)^2*k
+
+    for t in 1:T       
+        EV = V * Π'        
+        for s in 1:Na            # --- loop over states a_s ---
+            for i in 1:Nk                # --- loop over states k_i ---
+                best = -Inf
+                bj, bl = 1, 1
+
+                for j in 1:Nk            # --- loop over choices k'_j ---
+                
+                    iv = inv_val(kgrid[j], kgrid[i])
+
+                    for l in 1:Nn        # --- loop over choices n_l ---
+                        cv = cons(iv, kgrid[i], ngrid[l], agrid[s])
+                        cv <= 0 && continue          # infeasible: skip
+                        v  = log(cv) - χ*ngrid[l]^(1+γ)/(1+γ) + β*EV[j,s]  
+                        if v > best
+                            best, bj, bl = v, j, l
+                        end
+                    end
+                end
+
+                V_new[i,s] = best   # Bug 6 fixed: policy indexed by state i
+                kpol[i,s]  = bj
+                npol[i,s]  = bl
+            end                          # Bug 7 fixed: no duplicate block here
+
+        end
+
+        err = norm(V_new .- V, Inf)
+        V  .= V_new                  # in-place update avoids extra allocation
+        if err < ϵ
+            println("VFI converged in $t iterations (err=$err)")
+            break
+        end
+    end
+
+    return V, kpol, npol
+end
+
+
 
 
 # -------------------------------------------------------------------------
@@ -170,7 +224,7 @@ plot(0:200, [tp.k tp.n tp.c tp.y], label = ["k" "n" "c" "y"], layout = 4)
 # -------------------------------------------------------------------------
 # Q3: VFI (non-stochastic, ϕ=0)
 # -------------------------------------------------------------------------
-Nk   = 500
+Nk   = 50
 Nn   = 50
 # Center the capital grid around SS; ±40% is wide enough for a 50% shock
 kgrid = collect(range(0.6*ss.k, 1.4*ss.k, length = Nk))
@@ -250,4 +304,113 @@ p_c4 = plot(kgrid, [c_grid c_grid4],
             label = ["c(k) ϕ=0" "c(k) ϕ=10"],
             xlabel = "k", title = "Consumption policy", lw = 2)
 plot(p_k4, p_n4, p_i4, p_c4, layout = (2,2))
+
+
+# -------------------------------------------------------------------------
+# Q5: Stochastic model
+# -------------------------------------------------------------------------
+data = CSV.read("EC605-Computational-Reading/Assignments/logtfp_detrended.csv", DataFrame)
+a    = data[:, 2]            
+T    = length(a)
+
+a_lag = a[1:T-1]
+a_cur = a[2:T]
+ρ_hat = (a_lag ⋅ a_cur) / (a_lag ⋅ a_lag)          
+resid = a_cur .- ρ_hat .* a_lag
+σ_hat = std(resid)
+
+
+@show ρ_hat σ_hat
+
+N  = 11
+mc = rouwenhorst(N, ρ_hat, σ_hat)
+agrid = collect(mc.state_values)   # N-point grid
+Π  = mc.p                       # N×N transition matrix
+
+
+Vs, kpols, npols = value_function_iteration_stochastic(p, kgrid, ngrid, 5_000, 1e-7, Π, agrid)
+
+# -------------------------------------------------------------------------
+# Q6: simulate 10_000 periods, drop first 3_000 burn-in
+# -------------------------------------------------------------------------
+function simulate(params::Params, kpol, npol, kgrid, agrid, Π;
+                  T_sim = 10_000, T_burn = 3_000, seed = 42)
+    @unpack α, δ, ϕ = params
+    Random.seed!(seed)
+    Na = length(agrid)
+
+    # Cumulative transition probabilities for fast TFP draws
+    Π_cdf = cumsum(Π, dims = 2)
+
+    # Initialise at median TFP state and SS-nearest capital
+    s = (Na + 1) ÷ 2
+    i = size(kpol, 1) ÷ 2
+
+    k_sim = zeros(T_sim)
+    n_sim = zeros(T_sim)
+    a_sim = zeros(T_sim)
+    y_sim = zeros(T_sim)
+    c_sim = zeros(T_sim)
+    inv_sim = zeros(T_sim)
+
+    for t in 1:T_sim
+        k_sim[t]   = kgrid[i]
+        a_sim[t]   = agrid[s]
+        n_sim[t]   = ngrid[npol[i, s]]
+        kp         = kgrid[kpol[i, s]]
+        y_sim[t]   = exp(agrid[s]) * kgrid[i]^α * n_sim[t]^(1-α)
+        iv         = kp - (1-δ)*kgrid[i]
+        ψ          = iv/kgrid[i] - δ
+        inv_sim[t] = iv
+        c_sim[t]   = y_sim[t] - iv - ϕ*ψ^2*kgrid[i]
+
+        # Draw next TFP state from row s of Π
+        u = rand()
+        s = searchsortedfirst(Π_cdf[s, :], u)
+
+        # Next capital state: find nearest grid point to kp
+        i = argmin(abs.(kgrid .- kp))
+    end
+
+    # Drop burn-in
+    r = T_burn+1:T_sim
+    return (k = k_sim[r], n = n_sim[r], a = a_sim[r],
+            y = y_sim[r], c = c_sim[r], i = inv_sim[r])
+end
+
+sim = simulate(p, kpols, npols, kgrid, agrid, Π)
+
+# Summary statistics on the remaining 7_000 observations
+function summary_stats(x; name = "")
+    σ   = std(x)
+    ac1 = cor(x[1:end-1], x[2:end])
+    println("$name  std=$(round(σ,digits=4))  ac1=$(round(ac1,digits=4))")
+    return (; σ, ac1)
+end
+
+println("\n--- Q6 business cycle moments (ϕ=0) ---")
+for (name, x) in zip(["y","c","i","n","k"], [sim.y, sim.c, sim.i, sim.n, sim.k])
+    summary_stats(x; name = name)
+end
+
+# Cross-correlations with output
+println("\nCorrelations with output:")
+for (name, x) in zip(["c","i","n","k"], [sim.c, sim.i, sim.n, sim.k])
+    println("  cor(y,$name) = $(round(cor(sim.y, x), digits=4))")
+end
+
+# -------------------------------------------------------------------------
+# Q7: repeat with ϕ=10
+# -------------------------------------------------------------------------
+Vs7, kpols7, npols7 = value_function_iteration_stochastic(p4, kgrid, ngrid, 5_000, 1e-7, Π, agrid)
+sim7 = simulate(p4, kpols7, npols7, kgrid, agrid, Π)
+
+println("\n--- Q7 business cycle moments (ϕ=10) ---")
+for (name, x) in zip(["y","c","i","n","k"], [sim7.y, sim7.c, sim7.i, sim7.n, sim7.k])
+    summary_stats(x; name = name)
+end
+println("\nCorrelations with output:")
+for (name, x) in zip(["c","i","n","k"], [sim7.c, sim7.i, sim7.n, sim7.k])
+    println("  cor(y,$name) = $(round(cor(sim7.y, x), digits=4))")
+end
 
